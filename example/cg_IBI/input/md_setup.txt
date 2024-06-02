@@ -1,0 +1,13 @@
+lammpsname	ubuntu
+scriptname	in.IBI
+ngpu		0
+units		real
+temp		700
+tdamp		700.0
+timestep	5.0
+special_bonds	0.0,0.0,1.0
+dataname	cg.data
+ndump		1000
+dumpname	cg.dump
+relaxrun	10000
+prodrun		100000
