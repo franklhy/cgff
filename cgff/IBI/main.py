@@ -1,6 +1,4 @@
 import os
-import time
-import glob
 import json
 import shutil
 from mpi4py import MPI
@@ -15,7 +13,7 @@ from lammps import lammps
 
 class main:
     def __init__(self):
-        # variable set by setup()
+        ### variables set by setup()
         self.run_path = None
         self.target_data = None
         self.target_dump = None
@@ -28,7 +26,6 @@ class main:
         self.dihedral_setup_file = None
         self.improper_setup_file = None
         self.logfile = None
-        self.smooth_target_dist = None
         self.pair_style = None
         self.bond_style = None
         self.angle_style = None
@@ -38,32 +35,50 @@ class main:
         self.target_pressure = None
         self.pressure_correction_scale = None
 
-        self.start_from_prev_step = True
+        ### start the configuration from the last snapshot of the previous iteration
+        self.start_from_prev_step = True    
+        
+        ### number of bins in tabulated force field
         self.angle_nbins = 181
         self.dihedral_nbins = 360
         self.improper_nbins = 360
+        
+        ### whether to include inter-molecular rdf or intra-molecular rdf
         self.inter_mol = True
         self.intra_mol = True
+
+        ### damping coefficient for potential update
         self.ibi_damping_pair = 0.2
         self.ibi_damping_bond = 0.2
         self.ibi_damping_angle = 0.2
         self.ibi_damping_dihedral = 0.2
         self.ibi_damping_improper = 0.2
+
+        ### minPratio: minmum of the P(cg)/P(target), where P(..) is the distribution function
+        ### This repevent log(0) when calculating Boltzmann inversion
         self.minPratio_pair = 1e-3
         self.minPratio_bond = 1e-3
         self.minPratio_angle = 1e-3
         self.minPratio_dihedral = 1e-3
         self.minPratio_improper = 1e-3
+
+        ### root-mean-squared-deviation of distribution functions
+        self.normed_rmsd = False
         self.rmsd_file = "IBI.rmsd"
-        ### smoothing mode： "spline", "savgol" or "none"
-        ### smoothing condition s (for scipy.interpolate.splrep) for different interaction.
-        ### smoothing condition w for different interaction, w * nbins = window_length (for scipy.signal.savgol_filter)
-        ### Used to distribution function #(and smooth tabulated potential)
+
+        ### smooth mode： "spline", "savgol" or "none"
+        ### Applied to distribution function and tabulated potential.
+        ### For deltaV (i.e. change of tabulated potential for each iteration, only Savitzky-Golay smoother is used
+        ### parameter s (smoothing condition) is used in 'scipy.interpolate.splrep' only, i.e. mode "spline" (spline smoother).
+        ### parameter w (filter window size) is used in 'scipy.signal.savgol_filter' only, i.e. mode "savgol" (Savitzky-Golay smoother).
+        ### parameter p is the degree of the spline for mode "spline" or the order of polynomial for mode "savgol".
         self.smooth_mode_pair = "none"
         self.smooth_mode_bond = "none"
         self.smooth_mode_angle = "none"
         self.smooth_mode_dihedral = "none"
         self.smooth_mode_improper = "none"
+        self.smooth_target_dist = True
+        self.smooth_deltaV = True
         self.s_pair = 0.02
         self.s_bond = 0.02
         self.s_angle = 0.02
@@ -79,15 +94,19 @@ class main:
         self.p_angle = 3
         self.p_dihedral = 3
         self.p_improper = 3         ### no tabulated improper potential in LAMMPS
+
+        ### maximum value allowed for abs(deltaV). If abs(deltaV) is larger than this, it will be capped with this value.
         self.max_dV_pair = 0.1
-        self.max_dV_bond = 1
+        self.max_dV_bond = 0.1
         self.max_dV_angle = 0.1
         self.max_dV_dihedral = 0.1
-        self.max_dV_improper = 1
+        self.max_dV_improper = 0.1
+
         ### mpi4py
         self._comm = MPI.COMM_WORLD
         self._me = self._comm.Get_rank()
         self._nprocs = self._comm.Get_size()
+
         ### simulation and potential set up (will be modified by member function _read_setup)
         self.pair_cutoff_dict = {}
         self.pair_nbins_dict = {}
@@ -99,19 +118,22 @@ class main:
         self.angle_criterion_dict = {}
         self.dihedral_criterion_dict = {}
         self.improper_criterion_dict = {}
+
         ### fitting weight of potentials
         self.pair_fitting_weight_dict = {}
         self.bond_fitting_weight_dict = {}
         self.angle_fitting_weight_dict = {}
         self.dihedral_fitting_weight_dict = {}
         self.improper_fitting_weight_dict = {}
+
         ### initial guess of potentials
         self.pair_potential_guess_dict = {}
         self.bond_potential_guess_dict = {}
         self.angle_potential_guess_dict = {}
         self.dihedral_potential_guess_dict = {}
         self.improper_potential_guess_dict = {}
-        ### potentials that not to be changed during IBI (i.e. the same as the initial guess)
+
+        ### potentials that not to be changed during IBI (i.e. keep the same as the initial guess)
         self.pair_not_to_change = []
         self.bond_not_to_change = []
         self.angle_not_to_change = []
@@ -288,29 +310,69 @@ class main:
         f.close()
 
 
-    def setup(self, run_path=".", target_data=None, target_dump=None, target_dist_path=None, smooth_target_dist=True, cgtypemap=None, \
+    def setup(self, run_path=".", target_data=None, target_dump=None, target_dist_path=None, cgtypemap=None, \
         md_setup_file=None, pair_setup_file=None, bond_setup_file=None, angle_setup_file=None, dihedral_setup_file=None, improper_setup_file=None, \
         pair_style="table", bond_style="harmonic", angle_style="table", dihedral_style="table", improper_style="harmonic", \
         convert_dihedral_to_tablecut=False, \
         target_pressure=None, pressure_correction_scale=0.1,\
         logfile="log.IBI"):
-        
+        """
+        Parameters:
+            run_path: string
+                The path where IBI simulations will carry out and results will be saved.
+
+            target_data, target_dump: string
+                The lammps data and dump file of the target system.
+
+            target_dist_path: string
+                The path where distribution function of the target system is saved.
+                If None or the path is not found, then the target distribution function will be calculated.
+
+            cgtypemap: string
+                CG type mapping files' prefix. CG type mapping files includes XXX.atom, XXX.bond, XXX.angle, XXX.dihedral (and XXX.improper if improper is defined), where XXX is the prefix.
+                These files are generated by running the main function in class coarsegraining in CG.py
+
+            md/pair/bond/angle/dihedral/improper_setup_file: string
+                Files to setup parameters for md simulation, and tabulated potentials.
+
+            pair/bond/angle/dihdral/improper_style: string
+                Style of potentials
+
+            covert_dihedral_to_tablecut: bool
+                If True, diheral style will be converted to table/cut.
+                Such potential style should be able to prevent numerial instability when the dihedral becomes illy defined. (But not confirmed yet)
+
+            target_pressure: float
+                Set the target pressure. The unit is set in md_setup_file.
+                If it is not None, the pressure correction term (for pairwise potential) will be used.
+                If it is None, the pressure correction term will not be used.
+
+            pressure_correction_scale: float
+                Prefactor for the pressure correction term.
+
+            logfile: string
+                A log file that save all parameters as defined in __init__.
+        """
         self.run_path = os.path.abspath(run_path)
 
         if target_data:
             self.target_data = os.path.abspath(target_data)
+            if not os.path.exists(self.target_data):
+                raise RuntimeError("targer_data does not exists.")
         else:
             raise RuntimeError("Parameter target_data cannot be None.")
         
         if target_dump:
             self.target_dump = os.path.abspath(target_dump)
-        else:
-            raise RuntimeError("Parameter target_dump cannot be None.")
-        
+            if not os.path.exists(self.target_dump):
+                raise RuntimeError("target_dump does not exists.")
+
         if target_dist_path:
             self.target_dist_path = os.path.abspath(target_dist_path)
-
-        self.smooth_target_dist = smooth_target_dist
+            if not os.path.exists(self.target_dist_path):
+                raise RuntimeError("target_dist_path does not exists.")
+        if target_dump is None and target_dist_path is None:
+            raise RuntimeError("Either target_dump or target_dist_path should be provided.")
 
         if cgtypemap:
             self.cgtypemap = os.path.abspath(cgtypemap)
@@ -346,6 +408,8 @@ class main:
 
     def run(self, max_iterate=30):
         """
+        max_iterate: int
+            Maximum number of iteration.
         """
         if self._me == 0:
             dist_tool = distributions.distributions()              ### distribution tool (calculate distributions, rmsd of distributions)
@@ -564,7 +628,7 @@ class main:
             lammpsname = None
             scriptname = None
 
-        ### run lammps
+        ### iteration 0, run lammps
         lammpsname = self._comm.bcast(lammpsname, root=0)
         scriptname = self._comm.bcast(scriptname, root=0)
         lmp = lammps(lammpsname)
@@ -573,6 +637,7 @@ class main:
         loopi = 0
         finish_flag = False
         while True:
+            ### after one simulation, analyze distribution and check if convergence condition is met
             if self._me == 0:
                 ### calculate distributions (i.e. rdf, bond length distributions, ...)
                 all_distributions = dist_tool.distributions(sim_tool.dataname, sim_tool.dumpname, \
@@ -607,26 +672,46 @@ class main:
                 rmsdf = open(self.rmsd_file, "w")
                 converged = []
                 for key in rdf.keys():
-                    rmsd = dist_tool.rmsd(rdf[key], target_rdf[key])
+                    rmsd = dist_tool.rmsd(rdf[key], target_rdf[key], normed=self.normed_rmsd)
                     converged.append(rmsd < self.pair_criterion_dict[key])
                     rmsdf.write("%-16s%f\n" % ("pair_%d_%d" % (key[0], key[1]), rmsd))
                 for key in bonddist.keys():
-                    rmsd = dist_tool.rmsd(bonddist[key], target_bonddist[key])
+                    rmsd = dist_tool.rmsd(bonddist[key], target_bonddist[key], normed=self.normed_rmsd)
                     converged.append(rmsd < self.bond_criterion_dict[key])
                     rmsdf.write("%-16s%f\n" % ("bond_%d" % key, rmsd))
                 for key in angledist.keys():
-                    rmsd = dist_tool.rmsd(angledist[key], target_angledist[key])
+                    rmsd = dist_tool.rmsd(angledist[key], target_angledist[key], normed=self.normed_rmsd)
                     converged.append(rmsd < self.angle_criterion_dict[key])
                     rmsdf.write("%-16s%f\n" % ("angle_%d" % key, rmsd))
                 for key in dihedraldist.keys():
-                    rmsd = dist_tool.rmsd(dihedraldist[key], target_dihedraldist[key])
+                    rmsd = dist_tool.rmsd(dihedraldist[key], target_dihedraldist[key], normed=self.normed_rmsd)
                     converged.append(rmsd < self.dihedral_criterion_dict[key])
                     rmsdf.write("%-16s%f\n" % ("dihedral_%d" % key, rmsd))
                 for key in improperdist.keys():
-                    rmsd = dist_tool.rmsd(improperdist[key], target_improperdist[key])
+                    rmsd = dist_tool.rmsd(improperdist[key], target_improperdist[key], normed=self.normed_rmsd)
                     converged.append(rmsd < self.improper_criterion_dict[key])
                     rmsdf.write("%-16s%f\n" % ("improper_%d" % key, rmsd))
                 rmsdf.close()
+                ### check if pressure converges
+                if self.target_pressure is not None:
+                    pressure_file = open(sim_tool.pressure_file)
+                    pressure_file.readline()
+                    pressure_file.readline()
+                    current_pressure = float(pressure_file.readline().split()[1])
+                    pressure_file.close()
+                    print("current pressure of iteration no. %d is %f" % (loopi, current_pressure))
+                    if current_pressure > sim_tool.pressure_hist_hi or current_pressure < sim_tool.pressure_hist_lo:
+                        converged.append(False)
+                    else:
+                        p_hist = np.loadtxt(sim_tool.pressure_hist_file, skiprows=4)
+                        p_mean = np.sum(p_hist[:,1] * p_hist[:,3])
+                        p_std = np.sum((p_hist[:,1] - p_mean)**2 * p_hist[:,3])**0.5
+                        if self.target_pressure > current_pressure - p_std and self.target_pressure < current_pressure + p_std:
+                            converged.append(True)
+                        else:
+                            converged.append(False)
+                        print("std of pressure is %f" % p_std)
+                    print("target pressure is %f" % self.target_pressure)
 
                 if np.all(converged):
                     print("Converged!")
@@ -643,6 +728,7 @@ class main:
             if finish_flag:
                 break
 
+            ### next iteration
             if self._me == 0:
                 os.mkdir("%d" % loopi)
                 os.chdir("%d" % loopi)
@@ -654,7 +740,7 @@ class main:
                 else:
                     shutil.copy2("../0/input.dat", "./input.dat")
 
-                ### read the average pressure
+                ### read the average pressure of last iteration
                 current_pressure = None
                 if self.target_pressure is not None:
                     pressure_file = open("../%d/%s" % (loopi - 1, sim_tool.pressure_file))
@@ -663,12 +749,13 @@ class main:
                     current_pressure = float(pressure_file.readline().split()[1])
                     print("current pressure of iteration no. %d is %f." % (loopi - 1, current_pressure))
                     print("target pressure is %f." % self.target_pressure)
+                    pressure_file.close()
 
                 ### update potential (tabulated or specific style), and generate potential file if tabulated style is required
                 ### pair potential
                 for key in target_rdf.keys():
                     pair_potential[key].update_potential(rdf[key], target_rdf[key], \
-                        minPratio=self.minPratio_pair, max_dV=self.max_dV_pair, smooth_deltaV=True, w=self.w_pair, p=self.p_pair, \
+                        minPratio=self.minPratio_pair, max_dV=self.max_dV_pair, smooth_deltaV=self.smooth_deltaV, w=self.w_pair, p=self.p_pair, \
                         current_pressure=current_pressure, pressure_correction_scale=self.pressure_correction_scale, \
                         debug="debug/pair_dV_%d_%d.txt" % (key[0], key[1]))
                     #pair_potential[key].write_tabulated_potential("potential/pair_potential_nosmooth_%d_%d.txt" % (key[0], key[1]))
@@ -681,7 +768,7 @@ class main:
                 ### bond potential
                 for key in target_bonddist.keys():
                     bond_potential[key].update_potential(bonddist[key], target_bonddist[key], \
-                        minPratio=self.minPratio_bond, max_dV=self.max_dV_bond, smooth_deltaV=True, w=self.w_bond, p=self.p_bond, \
+                        minPratio=self.minPratio_bond, max_dV=self.max_dV_bond, smooth_deltaV=self.smooth_deltaV, w=self.w_bond, p=self.p_bond, \
                         debug="debug/bond_dV_%d.txt" % key)
                     #bond_potential[key].write_tabulated_potential("potential/bond_potential_nosmooth_%d.txt" % key)
                     #bond_potential[key].smooth_potential(s=self.s_bond, w=self.w_bond, p=self.p_bond, mode=self.smooth_mode_bond)
@@ -693,7 +780,7 @@ class main:
                 ### angle potential
                 for key in target_angledist.keys():
                     angle_potential[key].update_potential(angledist[key], target_angledist[key], \
-                        minPratio=self.minPratio_angle, max_dV=self.max_dV_angle, smooth_deltaV=True, w=self.w_angle, p=self.p_angle, \
+                        minPratio=self.minPratio_angle, max_dV=self.max_dV_angle, smooth_deltaV=self.smooth_deltaV, w=self.w_angle, p=self.p_angle, \
                         debug="debug/angle_dV_%d.txt" % key)
                     #angle_potential[key].write_tabulated_potential("potential/angle_potential_nosmooth_%d.txt" % key)
                     #angle_potential[key].smooth_potential(s=self.s_angle, w=self.w_angle, p=self.p_angle, mode=self.smooth_mode_angle)
@@ -705,7 +792,7 @@ class main:
                 ### dihedral potential
                 for key in target_dihedraldist.keys():
                     dihedral_potential[key].update_potential(dihedraldist[key], target_dihedraldist[key], \
-                        minPratio=self.minPratio_dihedral, max_dV=self.max_dV_dihedral, smooth_deltaV=True, w=self.w_dihedral, p=self.p_dihedral, \
+                        minPratio=self.minPratio_dihedral, max_dV=self.max_dV_dihedral, smooth_deltaV=self.smooth_deltaV, w=self.w_dihedral, p=self.p_dihedral, \
                         debug="debug/dihedral_dV_%d.txt" % key)
                     #dihedral_potential[key].write_tabulated_potential("potential/dihedral_potential_nosmooth_%d.txt" % key)
                     #dihedral_potential[key].smooth_potential(s=self.s_dihedral, w=self.w_dihedral, p=self.p_dihedral, mode=self.smooth_mode_dihedral)
@@ -718,7 +805,7 @@ class main:
                 for key in target_improperdist.keys():
                     ### table style is not available for improper in LAMMPS
                     improper_potential[key].update_potential(improperdist[key], target_improperdist[key], \
-                        minPratio=self.minPratio_improper, max_dV=self.max_dV_improper, smooth_deltaV=True, w=self.w_improper, p=self.p_improper, \
+                        minPratio=self.minPratio_improper, max_dV=self.max_dV_improper, smooth_deltaV=self.smooth_deltaV, w=self.w_improper, p=self.p_improper, \
                         debug="debug/improper_dV_%d.txt" % key)
                     improper_potential[key].write_tabulated_potential("potential/improper_potential_%d.txt" % key)
                     ffdbkey = improper_typemap[key]
@@ -729,6 +816,8 @@ class main:
 
                 ### prepare lammps input script according to current force fields
                 sim_tool.prepare(pair_potential, bond_potential, angle_potential, dihedral_potential, improper_potential)
+                if self.start_from_prev_step:
+                    sim_tool.replicate = 1
                 sim_tool.write_lammps_script()
 
             loopi = self._comm.bcast(loopi, root=0)

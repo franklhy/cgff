@@ -274,6 +274,33 @@ class analyze:
 
         return fig, ax
 
+    def plot_pressure(self):
+        """
+        Plot the pressure from different iteration
+        """
+        steps = [int(s) for s in os.listdir(self.run_path) if os.path.isdir(self.run_path + s) and self._is_number(s)]
+        steps.sort()
+
+        fig, ax = plt.subplots(1)
+        for i in steps:
+            pressure_file = os.path.join(self.run_path, "%d/pressure.txt" % i)
+            pressure_hist_file = os.path.join(self.run_path, "%d/pressure_hist.txt" % i)
+            if os.path.exists(pressure_file) and os.path.exists(pressure_hist_file):
+                try:    ### it is possible that the pressure.txt file is generated but the simulation is still running, so there is no data in the file
+                    pf = open(pressure_file)
+                    pf.readline()
+                    pf.readline()
+                    p_mean = float(pf.readline().split()[1])
+                    pf.close()
+
+                    p_hist = np.loadtxt(pressure_hist_file, skiprows=4)
+                    p_std = np.sum((p_hist[:,1] - p_mean)**2 * p_hist[:,3])**0.5
+                    ax.errorbar(i, p_mean, yerr=p_std, color='r', marker='o')
+                except:
+                    pass
+
+        return fig, ax
+
     '''
     def plot_potential_vs_nosmooth(self, Vtype="pair"):
         """

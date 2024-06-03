@@ -11,6 +11,7 @@ if me == 0:
     ibi.w_bond = 65
     ibi.w_angle = 15
     ibi.w_dihedral = 65
+    ibi.smooth_target_dist = True
     ibi.smooth_mode_pair = "spline"
     ibi.smooth_mode_bond = "spline"
     ibi.smooth_mode_angle = "spline"
@@ -22,7 +23,9 @@ if me == 0:
 
 target_path="../coarse_grained/"
 
-ibi.setup(run_path="./output/", target_data=target_path+"/output/cg.data", target_dump=target_path+"/output/cg.dump", cgtypemap=target_path+"/output/lmp2cgtype.map", \
+ibi.setup(run_path="./output/", target_data=target_path+"/output/cg.data", target_dump=target_path+"/output/cg.dump", 
+    cgtypemap=target_path+"/output/lmp2cgtype.map", \
+    target_dist_path="target_distribution",
     md_setup_file="input/md_setup.txt", \
     pair_setup_file="input/pair_setup.txt", bond_setup_file="input/bond_setup.txt", angle_setup_file="input/angle_setup.txt", dihedral_setup_file="input/dihedral_setup.txt", \
     pair_style="table", bond_style="table", angle_style="table", dihedral_style="multi/harmonic", \

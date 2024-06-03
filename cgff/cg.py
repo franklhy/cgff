@@ -1,5 +1,6 @@
 import os
 import copy
+from tqdm import tqdm
 import numpy as np
 from plato import data
 
@@ -444,26 +445,25 @@ class atomistic2cg:
             cgatoms[i,10] = mass
             pos = np.average(atoms[mask][:,(X,Y,Z)], axis=0, weights=atommasses[mask])
             allpos[i] = pos
-        image_flag_x = np.floor_divide(allpos[:,0] - box[0], box[3] - box[0])
-        wrapped_pos_x = allpos[:,0] - image_flag_x * (box[3] - box[0])
-        image_flag_y = np.floor_divide(allpos[:,1] - box[1], box[4] - box[1])
-        wrapped_pos_y = allpos[:,1] - image_flag_y * (box[4] - box[1])
-        image_flag_z = np.floor_divide(allpos[:,2] - box[2], box[5] - box[2])
-        wrapped_pos_z = allpos[:,2] - image_flag_z * (box[5] - box[2])
-        cgatoms[:,3] = wrapped_pos_x
-        cgatoms[:,4] = wrapped_pos_y
-        cgatoms[:,5] = wrapped_pos_z
-        cgatoms[:,6] = image_flag_x
-        cgatoms[:,7] = image_flag_y
-        cgatoms[:,8] = image_flag_z
-        props = ["id", "type", "mol", "x", "y", "z", "ix", "iy", "iz", "q"]
+        cgatoms[:,3] = allpos[:,0]
+        cgatoms[:,4] = allpos[:,1]
+        cgatoms[:,5] = allpos[:,2]
+        cgatoms[:,6] = 0
+        cgatoms[:,7] = 0
+        cgatoms[:,8] = 0
+        props = ["id", "type", "mol", "xu", "yu", "zu", "ix", "iy", "iz", "q"]
         d.changetimestep(timestep)
-        d.changebox(box)
+        if len(box) == 6:
+            d.changebox(box)
+        elif len(box) == 9:
+            d.changebox(box, triclinic=True)
         d.changeatoms(cgatoms[:,:10], props)
         d.changebonds(np.array(cgtopo_bonds).astype(np.int32))
         d.changeangles(np.array(cgtopo_angles).astype(np.int32))
         d.changedihedrals(np.array(cgtopo_dihedrals).astype(np.int32))
         d.changeimpropers(np.array([]).reshape(0,0).astype(np.int32))        ### no imporper interaction in cg simulation
+        d.wrap()
+        _,_,_,props,_ = d.snapshot()
         ### calculate masses for each cg type
         uniq_cgtype = np.unique(cgtype[:,1])
         if not np.array_equal(uniq_cgtype, np.arange(1, len(uniq_cgtype) + 1)):
@@ -490,7 +490,7 @@ class atomistic2cg:
             d.changeatoms(cgatoms[:,:10], props)
             d.write_data(os.path.join(output_path, "cg.data"), "full")
             print("CG data file cg.data (with the charge on all cg beads set to 0) and " \
-                + "cg.data_withcharge is generated.")
+                + "cg.data_withcharge are generated.")
         else:
             d.write_data(os.path.join(output_path, "cg.data"), "full")
             print("CG data file cg.data is generated.")
@@ -499,7 +499,7 @@ class atomistic2cg:
         if os.path.isfile(detailed_dump):
             detailed_data.set_traj_file(detailed_dump)
             alltimes = detailed_data.traj_time()
-            for step in range(len(alltimes)):
+            for step in tqdm(range(len(alltimes))):
                 ### read information from dump file of detailed simulation
                 detailed_data.load_traj(step)
                 detailed_data.unwrap()
@@ -526,22 +526,21 @@ class atomistic2cg:
                     cgatoms[i,2] = molid
                     pos = np.average(atoms[atomindex][:,(X,Y,Z)], axis=0, weights=atommasses[atomindex])
                     allpos[i] = pos
-                image_flag_x = np.floor_divide(allpos[:,0] - box[0], box[3] - box[0])
-                wrapped_pos_x = allpos[:,0] - image_flag_x * (box[3] - box[0])
-                image_flag_y = np.floor_divide(allpos[:,1] - box[1], box[4] - box[1])
-                wrapped_pos_y = allpos[:,1] - image_flag_y * (box[4] - box[1])
-                image_flag_z = np.floor_divide(allpos[:,2] - box[2], box[5] - box[2])
-                wrapped_pos_z = allpos[:,2] - image_flag_z * (box[5] - box[2])
-                cgatoms[:,3] = wrapped_pos_x
-                cgatoms[:,4] = wrapped_pos_y
-                cgatoms[:,5] = wrapped_pos_z
-                cgatoms[:,6] = image_flag_x
-                cgatoms[:,7] = image_flag_y
-                cgatoms[:,8] = image_flag_z
-                props = ["id", "type", "mol", "x", "y", "z", "ix", "iy", "iz",]
+                cgatoms[:,3] = allpos[:,0]
+                cgatoms[:,4] = allpos[:,1]
+                cgatoms[:,5] = allpos[:,2]
+                cgatoms[:,6] = 0
+                cgatoms[:,7] = 0
+                cgatoms[:,8] = 0
+                props = ["id", "type", "mol", "xu", "yu", "zu", "ix", "iy", "iz"]
                 d.changetimestep(timestep)
-                d.changebox(box)
+                if len(box) == 6:
+                    d.changebox(box)
+                elif len(box) == 9:
+                    d.changebox(box, triclinic=True)
                 d.changeatoms(cgatoms, props)
+                d.wrap()
+                _,_,_,props,_ = d.snapshot()
                 if step == 0:
                     write_mode = "w"
                 else:

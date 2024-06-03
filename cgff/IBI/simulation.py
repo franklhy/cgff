@@ -1,8 +1,6 @@
 from copy import deepcopy
 import numpy as np
 
-#from ..lammps_potential import lammps_potential
-
 class simulation:
     def __init__(self, md_setup_file):
         self.lammpsname = None
@@ -20,6 +18,7 @@ class simulation:
         self.special_bonds = [0.0, 0.0, 0.0]
         self.timestep = 1.0
         self.dataname = None
+        self.replicate = 1
         self.ndump = None
         self.dumpname = None
         self.relax_nvelimit = 0.05
@@ -62,6 +61,8 @@ class simulation:
                         self.timestep = float(second)
                     elif first == "dataname":
                         self.dataname = second
+                    elif first == "replicate":
+                        self.replicate = int(second)
                     elif first == "ndump":
                         self.ndump = int(second)
                     elif first == "dumpname":
@@ -88,6 +89,8 @@ class simulation:
         ### the name of file recording the average pressure (used for correction of pairwise potential)
         self.pressure_file = "pressure.txt"
         self.pressure_hist_file = "pressure_hist.txt"
+        self.pressure_hist_lo = -1000
+        self.pressure_hist_hi = 1000
         ### dictionary of potentials, will be modified in member function prepare
         self.pair_potential = None
         self.bond_potential = None
@@ -168,6 +171,8 @@ class simulation:
 
         self._write_potential_styles(f)
         f.write("%-16s%s\n" % ("read_data", "input.dat nocoeff"))
+        if self.replicate > 1:
+            f.write("%-16s%d %d %d\n" % ("replicate", self.replicate, self.replicate, self.replicate))
         self._write_pair_coeff(f)
         self._write_bond_coeff(f)
         self._write_angle_coeff(f)
@@ -213,7 +218,7 @@ class simulation:
         f.write("\n")
         f.write("%-16s%s\n" % ("compute", "press all pressure thermo_temp"))
         f.write("%-16s%s\n" % ("fix", "avg all ave/time 10 %d %d c_press file %s" % (self.prodrun/10, self.prodrun, self.pressure_file)))
-        f.write("%-16s%s\n" % ("fix", "hist all ave/histo 10 %d %d -1000 1000 20000 c_press file %s" % (self.prodrun/10, self.prodrun, self.pressure_hist_file)))
+        f.write("%-16s%s\n" % ("fix", "hist all ave/histo 10 %d %d %f %f 20000 c_press file %s" % (self.prodrun/10, self.prodrun, self.pressure_hist_lo, self.pressure_hist_hi, self.pressure_hist_file)))
         f.write("\n")
         f.write("%-16s%s\n" % ("dump", "1 all custom %d %s id type mol x y z ix iy iz vx vy vz" % (int(self.prodrun / self.ndump), self.dumpname)))
         f.write("\n")

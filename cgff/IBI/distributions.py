@@ -1,4 +1,3 @@
-import os
 from glob import glob
 import numpy as np
 from scipy import interpolate
@@ -149,15 +148,20 @@ class distributions:
 
         return all_distributions
 
-    def rmsd(self, current_distribution, target_distribution):
+    def rmsd(self, current_distribution, target_distribution, normed=False):
         """
         Calculate root-mean-squared deviation.
+        
+        normed: bool
+            If ture, normalized the rmsd by the mean value of target distribution (non zero term)
         """
         np.testing.assert_array_almost_equal(current_distribution[:,0], target_distribution[:,0])
         P_current = current_distribution[:,1]
         P_target = target_distribution[:,1]
         both_not_zero_mask = (P_current != 0) * (P_target != 0)
         rmsd = np.sqrt(np.mean((P_current[both_not_zero_mask] - P_target[both_not_zero_mask])**2))
+        if normed:
+            rmsd /= np.mean(P_target[both_not_zero_mask])
         return rmsd
 
     def smooth_distribution(self, dist, s=0.02, w=5, p=3, mode="spline", minPratio=1e-3, periodic=False):
@@ -193,7 +197,8 @@ class distributions:
             if periodic:
                 P_s = signal.savgol_filter(P_s, window_length=w, polyorder=p, mode="wrap")
             else:
-                P_s = signal.savgol_filter(P_s, window_length=w, polyorder=p, mode="interp")
+                #P_s = signal.savgol_filter(P_s, window_length=w, polyorder=p, mode="interp")
+                P_s = signal.savgol_filter(P_s, window_length=w, polyorder=p, mode="nearest")
         elif mode == "none":
             return np.column_stack((x,P))
         else:
