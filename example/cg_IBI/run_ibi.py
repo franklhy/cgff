@@ -23,7 +23,7 @@ if me == 0:
 
 target_path="../coarse_grained/"
 
-ibi.setup(run_path="./output/", target_data=target_path+"/output/cg.data", target_dump=target_path+"/output/cg.dump", 
+ibi.setup(run_path="./output/", target_data=target_path+"/output/cg.data", target_dump=target_path+"/output/cg.dump", \
     cgtypemap=target_path+"/output/lmp2cgtype.map", \
     target_dist_path="target_distribution",
     md_setup_file="input/md_setup.txt", \
